@@ -1,196 +1,85 @@
-# SupplyShield — Hackfusion
+# SupplyShield
 
-**Hackathon project by Team Hackfusion**
+Hackathon prototype by Team Hackfusion.
 
-A multi-agent AI system that detects supply chain disruptions and executes a verified, rule-based recovery plan in seconds.
+SupplyShield demonstrates a supply disruption workflow using a SQLite database of fictional company data. The recorded demo run used a deterministic **PLACEHOLDER Sentinel** verdict. It did not perform live research or verify a real disruption.
 
----
+## What the demo does
 
-## Problem
+Given a disruption event, the pipeline:
 
-Global supply chains are fragile. When a port closes or a typhoon strikes, procurement teams spend hours manually identifying which orders are at risk, finding alternative suppliers, and raising emergency purchase orders. SupplyShield automates that entire response pipeline.
+1. Uses the labeled PLACEHOLDER Sentinel verdict in `test_pipeline.py`.
+2. Calculates exposed orders from inventory, supplier lead times, and the disruption delay.
+3. Finds alternative suppliers with a rule-based Planner. The Planner uses no LLM and has no retry loop.
+4. Applies the configured Verifier checks for confidence, order size, maximum lead time, and price premium.
+5. Writes draft purchase orders and draft email text files to `outbox/`. It sends no email and issues no real purchase order.
 
----
+All company names, suppliers, products, customers, prices, inventory, orders, and disruption data are **MOCK** data.
 
-## Solution
+## Verified limitation: arrival before stockout
 
-SupplyShield runs a chain of autonomous agents on a natural-language disruption event:
+The Verifier does not currently check whether an alternative supplier's lead time is shorter than the exposure's `stockout_days`. In the recorded run, the Hanoi alternative for product `CASE-IP67` was approved even though its lead time was 9 days and the reported stockout was in 2 days. The demo therefore must not be described as enforcing an arrival-before-stockout rule.
 
-1. **Sentinel** — verifies the event using live news and weather APIs, returns a confidence-scored verdict
-2. **Impact Analyst** — queries the database to find which open orders are exposed, calculates stockout risk
-3. **Planner** — rule-based (no LLM) finds alternative suppliers for each exposed order
-4. **Verifier** — checks each candidate against procurement policies (lead time, price premium, order size)
-5. **Executor** — writes draft purchase orders and email drafts to `outbox/`
+Other checks still run, but they do not prevent this timing mismatch. This is a known limitation in the submitted code.
 
----
+## Setup on Windows
 
-## Architecture
+From PowerShell:
 
-```
-Event (text)
-    │
-    ▼
-[Sentinel Agent]  ←── news API + weather API
-    │  confirmed verdict + confidence
-    ▼
-[Impact Analyst]  ←── DB: orders, inventory, supplier_products
-    │  list of exposed orders + stockout days
-    ▼
-[Planner]         ←── DB: find_alternatives (rule-based, no LLM)
-    │  candidate suppliers per exposure
-    ▼
-[Verifier]        ←── policies.yaml (lead time, price, order size)
-    │  APPROVED / REJECTED / ESCALATE
-    ▼
-[Executor]        ──► outbox/PO-<job>-<n>.txt
-                  ──► outbox/EMAIL-PO-<job>-<n>.txt
-                  ──► actions table (DB)
-```
-
-All stages are logged to `job_events` and the final outcome is stored in `jobs.result_json`.
-
-### Key files
-
-| File | Purpose |
-|------|---------|
-| `app/agents/sentinel.py` | LLM agent — verifies disruption events |
-| `app/agents/impact.py` | Deterministic — finds exposed orders |
-| `app/agents/verifier.py` | Rule-based — checks procurement policies |
-| `app/pipeline.py` | Planner + Verifier + Executor coordination |
-| `app/executor.py` | Writes PO and email draft files to `outbox/` |
-| `app/orchestrator.py` | Job management and pipeline sequencing |
-| `app/tools/db_tools.py` | `find_exposures`, `find_alternatives` |
-| `app/tools/news.py` | RSS news search tool |
-| `app/tools/weather.py` | Open-Meteo weather tool |
-| `policies.yaml` | Procurement policy thresholds |
-| `app/db.py` | SQLite schema (8 tables) |
-| `app/seed.py` | MOCK data loader |
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Language | Python 3.11 |
-| Database | SQLite (via `sqlite3`) |
-| Data models | Pydantic v2 |
-| LLM clients | Anthropic Claude, Google Gemini, Ollama (fallback chain) |
-| News tool | RSS / feedparser |
-| Weather tool | Open-Meteo (free, no key required) |
-| Policy engine | PyYAML + pure Python rules |
-| Web API | FastAPI (optional dashboard — see Limitations) |
-
----
-
-## Setup
-
-```bash
-# 1. Clone
-git clone https://github.com/Nishanth-bangera/Hackfusion.git
-cd Hackfusion
-
-# 2. Create virtual environment
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # Linux/macOS
-
-# 3. Install dependencies
+```powershell
+cd C:\Hackfusion
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# 4. Configure environment
-copy .env.example .env         # Windows
-# cp .env.example .env         # Linux/macOS
-# Edit .env and fill in your API keys (at least one LLM provider)
-
-# 5. Seed the MOCK database
+Copy-Item .env.example .env
 python -m app.seed
+```
 
-# 6. Run the end-to-end test
+The end-to-end demo uses the PLACEHOLDER Sentinel and does not need an LLM API key:
+
+```powershell
 python test_pipeline.py
 ```
 
----
+The separate live Sentinel runner requires a configured, reachable LLM provider and working news/weather network access:
 
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `PRIMARY_LLM` | Yes | `anthropic`, `gemini`, or `ollama` |
-| `ANTHROPIC_API_KEY` | If using Anthropic | Your Anthropic API key |
-| `ANTHROPIC_MODEL` | No | Defaults to `claude-haiku-5-5` |
-| `GEMINI_API_KEY` | If using Gemini | Your Google Gemini API key |
-| `GEMINI_MODEL` | No | Defaults to `gemini-2.5-flash` |
-| `OLLAMA_MODEL` | If using Ollama | Local model name, e.g. `llama3.2` |
-| `OLLAMA_BASE_URL` | No | Defaults to `http://localhost:11434` |
-
-> **Never commit `.env` to version control.** It is listed in `.gitignore`.
-
----
-
-## How to Run
-
-```bash
-# Full end-to-end pipeline test (PLACEHOLDER sentinel if LLM unavailable)
-python test_pipeline.py
-
-# Individual component tests
-python test_impact.py        # Impact analyst (deterministic)
-python test_verifier.py      # Verifier policy rules
-python test_alternatives.py  # find_alternatives tool
-
-# Existing orchestrator tests
-python test_orchestrator.py
+```powershell
+python test_sentinel.py
 ```
 
----
+Keep real API keys only in the ignored `.env` file. Never commit `.env`.
 
-## Demo Workflow
+## Other checks
 
-1. `python -m app.seed` — loads MOCK suppliers, products, and open orders into SQLite
-2. `python test_pipeline.py` — runs one full job end-to-end:
-   - Creates a disruption event: *"Typhoon Haikui closes Shanghai port for 5 days"*
-   - **Sentinel** verifies (or uses PLACEHOLDER if LLM unavailable)
-   - **Impact** finds 4 exposed orders (all sourced via Shanghai port)
-   - **Planner** finds alternative suppliers: Chennai, Hanoi/Haiphong
-   - **Verifier** checks each against `policies.yaml` — all 4 pass (within lead-time and price limits)
-   - **Executor** writes 4 draft POs + 4 draft emails to `outbox/`
-   - Prints the full event log and outcome report
-
-**Sample outcome (PLACEHOLDER sentinel):**
-```
-Approved POs       : 4
-Escalations        : 0
-Rejections         : 0
-Worst stockout     : 4 days
-Total approved INR : ₹1,686,000.00
-Elapsed            : 0.6s
-Sentinel           : PLACEHOLDER
+```powershell
+python test_impact.py
+python test_alternatives.py
+python test_verifier.py
 ```
 
-**Sample outbox files:**
-```
-outbox/PO-6-1.txt          ← Draft PO for CELL-18650 via Hanoi Parts Co
-outbox/EMAIL-PO-6-1.txt    ← Draft email to procurement team
-outbox/PO-6-2.txt          ← Draft PO for CELL-18650 (order 1)
-outbox/EMAIL-PO-6-2.txt
-...
-```
+## Demo result
 
----
+The recorded PLACEHOLDER run completed with 4 approved draft POs, 0 escalations, and 0 rejections. The total approved value was INR 1,686,000. The same value was independently summed from the four PO files for the latest recorded job.
+
+The output files are drafts for human review. No email was sent and no purchase order was issued to a supplier.
 
 ## Limitations
 
-| Area | Detail |
-|------|--------|
-| **Company data** | All business data (suppliers, products, orders, prices) is **MOCK** data for a fictional company. No real company data is used. |
-| **Sentinel** | May be **LIVE** (using the configured LLM provider — Anthropic, Gemini, or Ollama) or **PLACEHOLDER** (deterministic fallback if the LLM is unreachable or unconfigured). The job log and outcome report clearly label which was used. During hackathon testing, **PLACEHOLDER** was used. |
-| **Planner** | Purely **rule-based** — no LLM reasoning in the planning stage. Picks the cheapest alternative that passes all verifier checks. |
-| **Retry loop** | The Planner has **no retry loop**. If all candidates are rejected, the order is escalated rather than re-planned with a modified strategy. |
-| **Executor** | Writes **draft files only** to `outbox/`. No real email is sent, no real purchase order is issued to any supplier. All files are labeled DRAFT. |
-| **Dashboard** | The optional FastAPI dashboard (`static/index.html`) was **not completed** due to time constraints. The database (`supplyshield.db`) can be queried directly with any SQLite client. |
-| **Baseline metric** | Any "manual response time" comparison would be an **assumption**, not a measured benchmark. No such comparison is claimed. |
+- **Sentinel:** the demo used a PLACEHOLDER verdict, not live research. The live LLM path has not been verified for this submission.
+- **Company data:** all business data is MOCK data for a fictional company.
+- **Planner:** it uses deterministic database lookup and rules; it has no LLM and no retry loop.
+- **Verifier:** it checks confidence, order size, maximum lead time, and price premium, but does not enforce arrival before stockout. The Hanoi `CASE-IP67` approval described above demonstrates this gap.
+- **Executor:** it writes draft files under `outbox/`; it sends no email and issues no real purchase order.
+- **Dashboard:** neither `static/index.html` nor a FastAPI dashboard was built.
+- **Response-time comparison:** the manual-response baseline is an assumption, not a measurement.
 
----
+## Project files
 
-*Built in one hour for the Hackfusion hackathon — November 2026.*
+- `app/agents/sentinel.py` - Sentinel and its news/weather evidence tools.
+- `app/agents/impact.py` - deterministic exposure report.
+- `app/agents/verifier.py` and `policies.yaml` - procurement policy checks.
+- `app/pipeline.py` - alternative supplier lookup, verification, and execution flow.
+- `app/executor.py` - writes PO and email draft files.
+- `app/orchestrator.py` - stores jobs, runs stages, and records `job_events`.
+- `app/db.py` and `app/seed.py` - SQLite schema and MOCK data.
+- `test_pipeline.py` - deterministic end-to-end demonstration using the PLACEHOLDER Sentinel.

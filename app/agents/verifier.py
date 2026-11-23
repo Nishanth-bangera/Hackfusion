@@ -80,6 +80,12 @@ def check_candidate(
             ),
         }
 
+    if candidate["lead_time_days"] > stockout_days:
+        return {
+            "decision": "REJECTED",
+            "reason": f"Arrives in {candidate['lead_time_days']} days, after stockout in {stockout_days} days",
+        }
+
     # All checks passed -> APPROVED
     return {
         "decision": "APPROVED",
