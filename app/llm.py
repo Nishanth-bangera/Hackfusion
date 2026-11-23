@@ -32,6 +32,23 @@ def _call_gemini(prompt: str) -> str:
     return response.text or ""
 
 
+def _call_ollama(prompt: str) -> str:
+    import httpx
+
+    response = httpx.post(
+        f"{config.OLLAMA_BASE_URL}/api/generate",
+        json={
+            "model": config.OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json().get("response", "")
+
+
 def _extract_json(text: str) -> dict:
     """Extract a JSON object from plain text or a Markdown-fenced reply."""
     text = re.sub(r"```(?:json)?", "", text, flags=re.IGNORECASE).strip()
@@ -48,8 +65,13 @@ def _extract_json(text: str) -> dict:
 
 
 def ask_json(prompt: str) -> dict:
-    """Ask the configured primary provider, then fall back to the other."""
-    providers = [_call_gemini, _call_anthropic] if config.PRIMARY_LLM == "gemini" else [_call_anthropic, _call_gemini]
+    """Ask the configured provider first, then try the other providers."""
+    provider_order = {
+        "anthropic": [_call_anthropic, _call_gemini, _call_ollama],
+        "gemini": [_call_gemini, _call_anthropic, _call_ollama],
+        "ollama": [_call_ollama, _call_anthropic, _call_gemini],
+    }
+    providers = provider_order.get(config.PRIMARY_LLM, provider_order["anthropic"])
     errors = []
     for call in providers:
         try:

@@ -1,5 +1,11 @@
+"""
+Orchestrator — creates jobs and runs the full agent pipeline.
+
+Pipeline: Sentinel -> Impact -> Planner -> Verifier -> Executor
+"""
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 
 from app.agents.impact import run_impact
@@ -63,14 +69,14 @@ def create_job(event_text: str) -> int:
 
 
 async def placeholder_sentinel(event_text: str) -> SentinelVerdict:
-    """Return a deterministic verdict for testing the orchestration flow."""
+    """Return a deterministic PLACEHOLDER verdict for testing the pipeline flow."""
     return SentinelVerdict(
         confirmed=True,
         severity="high",
         delay_days=5,
         location="Shanghai",
         confidence=0.86,
-        evidence=["TEST placeholder verdict"],
+        evidence=["PLACEHOLDER verdict — live Sentinel was not used"],
     )
 
 
@@ -80,27 +86,39 @@ async def run_job(
     sentinel: SentinelRunner | None = None,
     location: str = "Shanghai",
 ) -> None:
-    """Run Sentinel then Impact, recording the job and each agent step."""
+    """Run the full pipeline: Sentinel -> Impact -> Planner -> Verifier -> Executor."""
+    start_time = time.monotonic()
     _update_job(job_id, status="running")
 
     try:
+        # --- Stage 1: Sentinel ---
         _record_event(job_id, "sentinel", "Checking the event against news and weather.")
         if sentinel is None:
             async def live_sentinel(text: str) -> SentinelVerdict:
                 return await run_sentinel(text, location)
 
             sentinel = live_sentinel
+
         verdict = await sentinel(event_text)
+
+        # Detect whether the PLACEHOLDER was used
+        is_placeholder = any("PLACEHOLDER" in e for e in verdict.evidence)
+        sentinel_label = "PLACEHOLDER" if is_placeholder else "LIVE"
+
         _record_event(
             job_id,
             "sentinel",
-            f"confirmed={verdict.confirmed}, severity={verdict.severity}, "
+            f"[{sentinel_label}] confirmed={verdict.confirmed}, severity={verdict.severity}, "
             f"delay_days={verdict.delay_days}, confidence={verdict.confidence:.2f}",
         )
 
+        # Escalate if evidence is weak
         if not verdict.confirmed or verdict.confidence < 0.5:
             reason = "Sentinel evidence was unconfirmed or below the 0.5 confidence threshold."
-            result_json = json.dumps({"sentinel": verdict.model_dump()})
+            result_json = json.dumps({
+                "sentinel": verdict.model_dump(),
+                "sentinel_label": sentinel_label,
+            })
             _record_event(job_id, "orchestrator", f"Escalated: {reason}")
             _update_job(
                 job_id,
@@ -110,7 +128,11 @@ async def run_job(
             )
             return
 
-        _record_event(job_id, "impact", "Calculating exposed orders from inventory and lead times.")
+        # --- Stage 2: Impact ---
+        _record_event(
+            job_id, "impact",
+            "Calculating exposed orders from inventory and lead times.",
+        )
         impact = run_impact(verdict)
         _record_event(
             job_id,
@@ -119,11 +141,71 @@ async def run_job(
             f"worst stockout {impact.worst_stockout_days} days",
         )
 
-        result_json = json.dumps(
-            {"sentinel": verdict.model_dump(), "impact": impact.model_dump()}
+        if not impact.exposed:
+            elapsed = round(time.monotonic() - start_time, 1)
+            outcome = {
+                "approved_pos": 0,
+                "escalations": 0,
+                "rejections": 0,
+                "worst_stockout_days": 0,
+                "total_approved_inr": 0.0,
+                "elapsed_seconds": elapsed,
+                "sentinel_label": sentinel_label,
+                "note": "No exposures found — no procurement action needed.",
+            }
+            result_json = json.dumps({
+                "sentinel": verdict.model_dump(),
+                "sentinel_label": sentinel_label,
+                "impact": impact.model_dump(),
+                "outcome": outcome,
+            })
+            _update_job(job_id, status="done", result_json=result_json)
+            _record_event(job_id, "orchestrator", "No exposures found — job complete.")
+            return
+
+        # --- Stages 3+4+5: Planner + Verifier + Executor ---
+        _record_event(
+            job_id, "planner",
+            "Running rule-based planner (no LLM, no retry loop).",
         )
+        from app.pipeline import run_pipeline
+
+        pipeline_result = run_pipeline(
+            job_id=job_id,
+            impact=impact,
+            confidence=verdict.confidence,
+            disrupted_port=verdict.location,
+        )
+
+        elapsed = round(time.monotonic() - start_time, 1)
+        outcome = {
+            "approved_pos": pipeline_result["approved_pos"],
+            "escalations": pipeline_result["escalations"],
+            "rejections": pipeline_result["rejections"],
+            "worst_stockout_days": impact.worst_stockout_days,
+            "total_approved_inr": pipeline_result["total_approved_inr"],
+            "elapsed_seconds": elapsed,
+            "output_files": pipeline_result["output_files"],
+            "sentinel_label": sentinel_label,
+            "note": (
+                "Baseline manual response time is an assumption, not a measurement."
+            ),
+        }
+        result_json = json.dumps({
+            "sentinel": verdict.model_dump(),
+            "sentinel_label": sentinel_label,
+            "impact": impact.model_dump(),
+            "outcome": outcome,
+        })
         _update_job(job_id, status="done", result_json=result_json)
-        _record_event(job_id, "orchestrator", "Current analysis stages completed.")
+        _record_event(
+            job_id, "orchestrator",
+            f"Done. POs={pipeline_result['approved_pos']}, "
+            f"escalations={pipeline_result['escalations']}, "
+            f"rejections={pipeline_result['rejections']}, "
+            f"elapsed={elapsed}s",
+        )
+
     except Exception as exc:
         reason = f"{type(exc).__name__}: {exc}"
         _record_event(job_id, "orchestrator", f"Job failed: {reason}")
@@ -131,7 +213,7 @@ async def run_job(
 
 
 async def run_disruption(event_text: str, location: str = "Shanghai") -> int:
-    """Create a job and run the implemented Sentinel and Impact stages."""
+    """Create a job and run the full pipeline."""
     job_id = create_job(event_text)
     await run_job(job_id, event_text, location=location)
     return job_id

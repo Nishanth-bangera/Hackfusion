@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import ValidationError
 
+from app import config
 from app.llm import ask_json
 from app.schemas import SentinelVerdict
 from app.tools.news import search_news
@@ -37,7 +38,13 @@ async def run_sentinel(event_text: str, location: str = "Shanghai") -> SentinelV
         _run_weather(lat, lon),
     )
 
-    if isinstance(news, dict) and "error" in news and isinstance(weather, dict) and "error" in weather:
+    if (
+        config.PRIMARY_LLM != "ollama"
+        and isinstance(news, dict)
+        and "error" in news
+        and isinstance(weather, dict)
+        and "error" in weather
+    ):
         return SentinelVerdict(
             confirmed=False,
             severity="low",
