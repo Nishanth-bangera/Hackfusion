@@ -1,0 +1,7 @@
+# Supply chain procurement policies
+# All thresholds are illustrative MOCK rules — not from a real company.
+
+max_lead_time_days: 14          # candidate lead_time must be <= this
+max_unit_price_premium_pct: 20  # candidate price must be <= current * 1.20
+max_order_units: 10000          # orders above this require human escalation
+min_confidence: 0.5             # sentinel confidence below this -> ESCALATE
