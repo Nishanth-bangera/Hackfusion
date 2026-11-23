@@ -18,7 +18,12 @@ With MOCK data:
 """
 import asyncio
 import json
+import sys
 from pathlib import Path
+from app.schemas import SentinelVerdict
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from app.db import get_connection
 from app.orchestrator import create_job, placeholder_sentinel, run_job
