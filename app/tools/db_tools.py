@@ -52,3 +52,23 @@ def find_exposures(port: str, delay_days: int, today: date | None = None) -> lis
 
     exposures.sort(key=lambda exposure: exposure["stockout_days"], reverse=True)
     return exposures
+
+
+def find_alternatives(product_id: int, exclude_port: str) -> list[dict]:
+    """Approved suppliers for a product, excluding the disrupted port, cheapest first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.id AS supplier_id, s.name AS supplier_name, s.port,
+                   sp.unit_price_inr, sp.lead_time_days, sp.capacity_units
+            FROM supplier_products sp
+            JOIN suppliers s ON s.id = sp.supplier_id
+            WHERE sp.product_id = ? AND s.approved = 1 AND s.port != ?
+            ORDER BY sp.unit_price_inr ASC
+            """,
+            (product_id, exclude_port),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
